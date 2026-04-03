@@ -3,5 +3,5 @@ uvicorn
 langgraph
 langchain-groq
 python-dotenv
-serpapi
+google-search-results
 pydantic
