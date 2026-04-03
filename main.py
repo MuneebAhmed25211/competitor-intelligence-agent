@@ -2,12 +2,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
-import asyncio
+import random
 from typing import Annotated
 from typing_extensions import TypedDict
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from serpapi.google_search import GoogleSearch
-from fastapi import FastAPI          
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel       
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -25,11 +26,28 @@ class State(TypedDict):
     search_results: str
     final_report: str
 
+
+GROQ_KEYS = [
+    os.environ.get("GROQ_API_KEY_1", ""),
+    os.environ.get("GROQ_API_KEY_2", ""),
+    os.environ.get("GROQ_API_KEY_3", ""),
+]
+
+GROQ_KEYS = [k for k in GROQ_KEYS if k]
+
+def get_llm():
+    api_key = random.choice(GROQ_KEYS)
+    return init_chat_model(
+        "llama-3.3-70b-versatile",
+        model_provider="groq",
+        api_key=api_key
+    )
+
 def planner_node(state: State) -> dict:
     messages = state.get("messages", [])
     query = messages[-1].content if messages else ""
     
-    llm = init_chat_model("llama-3.3-70b-versatile", model_provider="groq")
+    llm = get_llm()
     response = llm.invoke([
         SystemMessage(content="""You are a competitive intelligence planner. 
         Given a company name, its niche, and target country, identify its top 5 direct competitors IN THAT COUNTRY.
@@ -74,7 +92,7 @@ def search_node(state: State) -> dict:
     niche = state.get("niche", "")
     country = state.get("country", "United States")
     
-    llm = init_chat_model("llama-3.3-70b-versatile", model_provider="groq")
+    llm = get_llm()
     extraction = llm.invoke([
         SystemMessage(content="Extract only the competitor company names from this text. Return ONLY a Python list like: ['Company1', 'Company2', 'Company3']. Nothing else."),
         HumanMessage(content=research_plan)
@@ -85,7 +103,6 @@ def search_node(state: State) -> dict:
     except:
         competitor_names = ["competitor analysis"]
 
-    # Search ALL competitors simultaneously
     api_key = os.environ["SERPAPI_API_KEY"]
     args_list = [
         (name, company_name, niche, country, api_key) 
@@ -99,7 +116,7 @@ def search_node(state: State) -> dict:
     return {"search_results": str(all_results)}
 
 def analyst_node(state: State) -> dict:
-    llm = init_chat_model("llama-3.3-70b-versatile", model_provider="groq")
+    llm = get_llm()
     response = llm.invoke([
         SystemMessage(content="You are a research analyst. Synthesize the search results into clear findings."),
         HumanMessage(content=f"Research plan:\n{state.get('research_plan', '')}\n\nSearch results:\n{state.get('search_results', '')}")
@@ -107,7 +124,7 @@ def analyst_node(state: State) -> dict:
     return {"final_report": response.content}
 
 def writer_node(state: State) -> dict:
-    llm = init_chat_model("llama-3.3-70b-versatile", model_provider="groq")
+    llm = get_llm()
     company_name = state.get("company_name", "the company")
     country = state.get("country", "United States")
     niche = state.get("niche", "")
@@ -179,8 +196,12 @@ class ResearchResponse(BaseModel):
     research_plan: str
     final_report: str
 
-# Cache dictionary — stores results so same query returns instantly
+# ── CACHE ──
 report_cache = {}
+
+# ── DAILY LIMIT TRACKER ──
+request_tracker = {"date": date.today(), "count": 0}
+DAILY_LIMIT = 25
 
 @app.get("/")
 def root():
@@ -188,13 +209,27 @@ def root():
 
 @app.post("/analyze", response_model=ResearchResponse)
 def run_research(request: AnalyzeRequest):
-    # Create unique cache key from all three inputs
+
+    # Reset counter on new day
+    if request_tracker["date"] != date.today():
+        request_tracker["date"] = date.today()
+        request_tracker["count"] = 0
+
+    # Check daily limit
+    if request_tracker["count"] >= DAILY_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail="Daily demo limit reached. Email muneebahmed@gmail.com for full access or a custom build."
+        )
+
+    # Check cache — cached results don't count toward limit
     cache_key = f"{request.company_name.lower()}_{request.niche.lower()}_{request.country.lower()}"
-    
-    # Return cached result instantly if it exists
     if cache_key in report_cache:
         return report_cache[cache_key]
-    
+
+    # Count this as a new request
+    request_tracker["count"] += 1
+
     config = {"configurable": {"thread_id": f"analyze-{request.company_name[:20]}"}}
     
     full_query = f"Company: {request.company_name}, Niche: {request.niche}, Country: {request.country}"
@@ -217,6 +252,5 @@ def run_research(request: AnalyzeRequest):
         final_report=result["final_report"]
     )
     
-    # Cache for next time
     report_cache[cache_key] = response
     return response
