@@ -5,7 +5,7 @@ load_dotenv()
 import os
 from typing import Annotated
 from typing_extensions import TypedDict
-from serpapi.google_search import GoogleSearch
+from serpapi import GoogleSearch
 from fastapi import FastAPI          
 from pydantic import BaseModel       
 from langchain.chat_models import init_chat_model
@@ -63,12 +63,11 @@ def search_node(state: State) -> dict:
     for name in competitor_names[:5]:
         try:
             search = GoogleSearch({
-                # Now includes country context
                 "q": f"{name} pricing features reviews {company_name} competitor",
                 "api_key": os.environ["SERPAPI_API_KEY"],
                 "num": 3
             })
-            response = search.get_dict()
+            response = search.get_dict()          # This line is fine
             for item in response.get("organic_results", []):
                 all_results.append({
                     "competitor_name": name,
