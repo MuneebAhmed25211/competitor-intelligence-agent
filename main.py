@@ -5,7 +5,7 @@ load_dotenv()
 import os
 from typing import Annotated
 from typing_extensions import TypedDict
-from serpapi import GoogleSearch
+from serpapi.google_search import GoogleSearch
 from fastapi import FastAPI          
 from pydantic import BaseModel       
 from langchain.chat_models import init_chat_model
