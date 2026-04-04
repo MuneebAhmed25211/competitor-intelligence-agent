@@ -27,12 +27,20 @@ class State(TypedDict):
     search_results: str
     final_report: str
 
+# ── GROQ KEY ROTATION ──
 GROQ_KEYS = [
     os.environ.get("GROQ_API_KEY_1", ""),
     os.environ.get("GROQ_API_KEY_2", ""),
     os.environ.get("GROQ_API_KEY_3", ""),
 ]
 GROQ_KEYS = [k for k in GROQ_KEYS if k]
+
+# ── SERPAPI KEY ROTATION ──
+SERP_KEYS = [
+    os.environ.get("SERPAPI_API_KEY_1", ""),
+    os.environ.get("SERPAPI_API_KEY_2", ""),
+]
+SERP_KEYS = [k for k in SERP_KEYS if k]
 
 def get_llm():
     api_key = random.choice(GROQ_KEYS)
@@ -41,6 +49,9 @@ def get_llm():
         model_provider="groq",
         api_key=api_key
     )
+
+def get_serp_key():
+    return random.choice(SERP_KEYS)
 
 def planner_node(state: State) -> dict:
     messages = state.get("messages", [])
@@ -80,25 +91,35 @@ def planner_node(state: State) -> dict:
     }
 
 def search_single_competitor(args):
-    name, company_name, niche, country, api_key = args
-    try:
-        search = GoogleSearch({
-            "q": f"{name} {niche} pricing features reviews {country}",
-            "api_key": api_key,
-            "num": 3
-        })
-        response = search.get_dict()
-        results = []
-        for item in response.get("organic_results", []):
-            results.append({
-                "competitor_name": name,
-                "title": item.get("title"),
-                "link": item.get("link"),
-                "snippet": item.get("snippet", "")
+    name, company_name, niche, country = args
+    # Try each SERP key until one works
+    for api_key in SERP_KEYS:
+        try:
+            search = GoogleSearch({
+                "q": f"{name} {niche} pricing features reviews {country}",
+                "api_key": api_key,
+                "num": 3
             })
-        return results
-    except Exception as e:
-        return [{"competitor_name": name, "error": str(e)}]
+            response = search.get_dict()
+            
+            # Check if we hit the rate limit on this key
+            if "error" in response and "limit" in str(response.get("error", "")).lower():
+                continue  # Try next key
+                
+            results = []
+            for item in response.get("organic_results", []):
+                results.append({
+                    "competitor_name": name,
+                    "title": item.get("title"),
+                    "link": item.get("link"),
+                    "snippet": item.get("snippet", "")
+                })
+            return results
+        except Exception:
+            continue  # Try next key
+    
+    # All keys failed
+    return [{"competitor_name": name, "error": "search_limit_reached"}]
 
 def search_node(state: State) -> dict:
     research_plan = state.get("research_plan", "")
@@ -117,9 +138,8 @@ def search_node(state: State) -> dict:
     except:
         competitor_names = ["competitor analysis"]
 
-    api_key = os.environ["SERPAPI_API_KEY"]
     args_list = [
-        (name, company_name, niche, country, api_key)
+        (name, company_name, niche, country)
         for name in competitor_names[:5]
     ]
 
@@ -127,6 +147,19 @@ def search_node(state: State) -> dict:
         results_list = list(executor.map(search_single_competitor, args_list))
 
     all_results = [item for sublist in results_list for item in sublist]
+    
+    # Check if all searches failed due to limit
+    all_errors = all(
+        len(r) == 1 and r[0].get("error") == "search_limit_reached" 
+        for r in results_list
+    )
+    
+    if all_errors:
+        raise HTTPException(
+            status_code=503,
+            detail="search_limit_reached"
+        )
+
     return {"search_results": str(all_results)}
 
 def analyst_node(state: State) -> dict:
@@ -230,7 +263,7 @@ def run_research(request: AnalyzeRequest):
     if request_tracker["count"] >= DAILY_LIMIT:
         raise HTTPException(
             status_code=429,
-            detail="Daily demo limit reached. Email muneebahmed@gmail.com for full access or a custom build."
+            detail="daily_limit_reached"
         )
 
     cache_key = f"{request.company_name.lower()}_{request.niche.lower()}_{request.country.lower()}_{request.competitor_level.lower()}"
