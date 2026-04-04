@@ -52,7 +52,6 @@ def planner_node(state: State) -> dict:
         "Enterprise (Market leaders)": "Identify the top 5 largest, most established competitors — Fortune 500 level or market leaders with massive brand recognition.",
         "Mid-market (Established brands)": "Identify 5 mid-sized established competitors — companies with solid market presence but not industry giants. Revenue roughly $10M-$500M range.",
         "Small business (Startups & emerging)": "Identify 5 small or emerging competitors — startups, bootstrapped companies, or newer brands at an early growth stage with limited market share.",
-        "Direct competitors (Same size & stage)": "Identify 5 competitors that are at the EXACT same size, stage, and market position as the company being analyzed. Focus on companies the user would realistically win business against day to day — not giants, not tiny unknown brands."
     }
 
     instruction = level_instructions.get(competitor_level, level_instructions["All sizes"])
