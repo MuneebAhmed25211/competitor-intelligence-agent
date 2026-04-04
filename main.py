@@ -22,17 +22,16 @@ class State(TypedDict):
     company_name: str
     niche: str
     country: str
+    competitor_level: str
     research_plan: str
     search_results: str
     final_report: str
-
 
 GROQ_KEYS = [
     os.environ.get("GROQ_API_KEY_1", ""),
     os.environ.get("GROQ_API_KEY_2", ""),
     os.environ.get("GROQ_API_KEY_3", ""),
 ]
-
 GROQ_KEYS = [k for k in GROQ_KEYS if k]
 
 def get_llm():
@@ -46,11 +45,26 @@ def get_llm():
 def planner_node(state: State) -> dict:
     messages = state.get("messages", [])
     query = messages[-1].content if messages else ""
-    
+    competitor_level = state.get("competitor_level", "All sizes")
+
+    level_instructions = {
+        "All sizes": "Identify the top 5 direct competitors regardless of company size.",
+        "Enterprise (Market leaders)": "Identify the top 5 largest, most established competitors — Fortune 500 level or market leaders with massive brand recognition.",
+        "Mid-market (Established brands)": "Identify 5 mid-sized established competitors — companies with solid market presence but not industry giants. Revenue roughly $10M-$500M range.",
+        "Small business (Startups & emerging)": "Identify 5 small or emerging competitors — startups, bootstrapped companies, or newer brands at an early growth stage with limited market share.",
+        "Direct competitors (Same size & stage)": "Identify 5 competitors that are at the EXACT same size, stage, and market position as the company being analyzed. Focus on companies the user would realistically win business against day to day — not giants, not tiny unknown brands."
+    }
+
+    instruction = level_instructions.get(competitor_level, level_instructions["All sizes"])
+
     llm = get_llm()
     response = llm.invoke([
-        SystemMessage(content="""You are a competitive intelligence planner. 
+        SystemMessage(content=f"""You are a competitive intelligence planner. 
         Given a company name, its niche, and target country, identify its top 5 direct competitors IN THAT COUNTRY.
+        
+        Competitor level filter: {competitor_level}
+        Instruction: {instruction}
+        
         Return ONLY a numbered list of competitor names, nothing else.
         Example:
         1. Competitor A
@@ -62,7 +76,8 @@ def planner_node(state: State) -> dict:
         "research_plan": response.content,
         "company_name": state.get("company_name", ""),
         "niche": state.get("niche", ""),
-        "country": state.get("country", "United States")
+        "country": state.get("country", "United States"),
+        "competitor_level": competitor_level
     }
 
 def search_single_competitor(args):
@@ -91,13 +106,13 @@ def search_node(state: State) -> dict:
     company_name = state.get("company_name", "")
     niche = state.get("niche", "")
     country = state.get("country", "United States")
-    
+
     llm = get_llm()
     extraction = llm.invoke([
         SystemMessage(content="Extract only the competitor company names from this text. Return ONLY a Python list like: ['Company1', 'Company2', 'Company3']. Nothing else."),
         HumanMessage(content=research_plan)
     ])
-    
+
     try:
         competitor_names = eval(extraction.content.strip())
     except:
@@ -105,13 +120,13 @@ def search_node(state: State) -> dict:
 
     api_key = os.environ["SERPAPI_API_KEY"]
     args_list = [
-        (name, company_name, niche, country, api_key) 
+        (name, company_name, niche, country, api_key)
         for name in competitor_names[:5]
     ]
-    
+
     with ThreadPoolExecutor(max_workers=5) as executor:
         results_list = list(executor.map(search_single_competitor, args_list))
-    
+
     all_results = [item for sublist in results_list for item in sublist]
     return {"search_results": str(all_results)}
 
@@ -128,11 +143,13 @@ def writer_node(state: State) -> dict:
     company_name = state.get("company_name", "the company")
     country = state.get("country", "United States")
     niche = state.get("niche", "")
-    
+    competitor_level = state.get("competitor_level", "All sizes")
+
     response = llm.invoke([
         SystemMessage(content=f"""You are a professional competitive intelligence writer.
         Write a comprehensive competitor analysis report for {company_name} in the {niche} niche, 
         focused on the {country} market.
+        Competitor level analyzed: {competitor_level}
         
         Use EXACTLY this structure with markdown:
         
@@ -180,7 +197,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -188,18 +205,16 @@ app.add_middleware(
 
 class AnalyzeRequest(BaseModel):
     company_name: str
-    niche: str  
+    niche: str
     country: str = "United States"
+    competitor_level: str = "All sizes"
 
 class ResearchResponse(BaseModel):
     company_name: str
     research_plan: str
     final_report: str
 
-# ── CACHE ──
 report_cache = {}
-
-# ── DAILY LIMIT TRACKER ──
 request_tracker = {"date": date.today(), "count": 0}
 DAILY_LIMIT = 25
 
@@ -209,48 +224,44 @@ def root():
 
 @app.post("/analyze", response_model=ResearchResponse)
 def run_research(request: AnalyzeRequest):
-
-    # Reset counter on new day
     if request_tracker["date"] != date.today():
         request_tracker["date"] = date.today()
         request_tracker["count"] = 0
 
-    # Check daily limit
     if request_tracker["count"] >= DAILY_LIMIT:
         raise HTTPException(
             status_code=429,
             detail="Daily demo limit reached. Email muneebahmed@gmail.com for full access or a custom build."
         )
 
-    # Check cache — cached results don't count toward limit
-    cache_key = f"{request.company_name.lower()}_{request.niche.lower()}_{request.country.lower()}"
+    cache_key = f"{request.company_name.lower()}_{request.niche.lower()}_{request.country.lower()}_{request.competitor_level.lower()}"
     if cache_key in report_cache:
         return report_cache[cache_key]
 
-    # Count this as a new request
     request_tracker["count"] += 1
 
     config = {"configurable": {"thread_id": f"analyze-{request.company_name[:20]}"}}
-    
-    full_query = f"Company: {request.company_name}, Niche: {request.niche}, Country: {request.country}"
-    
+
+    full_query = f"Company: {request.company_name}, Niche: {request.niche}, Country: {request.country}, Competitor Level: {request.competitor_level}"
+
     initial_state = {
         "messages": [HumanMessage(content=full_query)],
         "company_name": request.company_name,
         "niche": request.niche,
         "country": request.country,
+        "competitor_level": request.competitor_level,
         "research_plan": "",
         "search_results": "",
         "final_report": ""
     }
-    
+
     result = graph.invoke(initial_state, config=config)
-    
+
     response = ResearchResponse(
         company_name=result.get("company_name", request.company_name),
         research_plan=result["research_plan"],
         final_report=result["final_report"]
     )
-    
+
     report_cache[cache_key] = response
     return response
