@@ -250,9 +250,10 @@ report_cache = {}
 request_tracker = {"date": date.today(), "count": 0}
 DAILY_LIMIT = 25
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {"status": "Competitor Intelligence Agent is running"}
+
 
 @app.post("/analyze", response_model=ResearchResponse)
 def run_research(request: AnalyzeRequest):
